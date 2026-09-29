@@ -6,6 +6,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = RadiantTidal
 RadiantTidal_FILES = $(wildcard src/*.m)
 RadiantTidal_CFLAGS = -fobjc-arc -Wall
+RadiantTidal_LDFLAGS = -Wl,-current_version,1.0.0
 RadiantTidal_FRAMEWORKS = UIKit MediaPlayer QuartzCore CoreGraphics CoreText Metal AVFoundation
 RadiantTidal_USE_MODULES = 0
 
