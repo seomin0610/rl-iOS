@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 
+// kRLKawarpMSL is ported from kawarp (MIT, Copyright (c) 2026 Better Lyrics): see THIRD-PARTY.md
 #define RLMSL(...) #__VA_ARGS__
 static const char *kRLKawarpMSL = "#include <metal_stdlib>\nusing namespace metal;\n" RLMSL(
 struct U { float2 res; float time; float blend; float warp; float sat; float dither; float scale; float bright; float contrast; };
