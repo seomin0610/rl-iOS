@@ -413,7 +413,7 @@ static double RLSmooth(double p) {
 
 - (void)update:(double)t from:(double)s to:(double)e {
 	double leave = e - kBreakClose - kBreakOut, in = MAX(0, MIN(1, (t - s - kBreakWait) / kBreakIn));
-	double scale = (1 - pow(1 - in, 3)) * (1 + 0.08 * sin((t - s) * M_PI * 2 / 3)), alpha = MIN(1, in * 2);
+	double scale = (1 - pow(1 - in, 3)) * (1 + 0.04 * sin((t - s) * M_PI * 2 / 3)), alpha = MIN(1, in * 2);
 	if (t > leave) {
 		double p = (t - leave) / kBreakOut, shrink = RLSmooth((p - 0.35) / 0.65);
 		scale *= p < 0.35 ? 1 + 0.15 * RLSmooth(p / 0.35) : 1.15 * (1 - shrink);
