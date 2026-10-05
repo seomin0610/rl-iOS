@@ -371,6 +371,64 @@ static UIViewPropertyAnimator *RLEase(NSTimeInterval d, void (^animations)(void)
 - (CGFloat)height { return _main.height + _trH + (_active ? _bgH : 0); }
 @end
 
+#pragma mark - Instrumental break dots
+
+static const double kBreakMin = 5, kBreakWait = 0.3, kBreakIn = 0.5, kBreakOut = 0.4, kBreakClose = 0.5;
+
+static double RLSmooth(double p) {
+	p = MAX(0, MIN(1, p));
+	return p * p * (3 - 2 * p);
+}
+
+@interface RLDotsView : UIView
+- (instancetype)initWithSize:(CGFloat)size;
+- (void)update:(double)t from:(double)s to:(double)e;
+@end
+
+@implementation RLDotsView {
+	CALayer *_group;
+	NSArray<CALayer *> *_dots;
+}
+
+- (instancetype)initWithSize:(CGFloat)size {
+	CGFloat d = round(size * 0.42), gap = round(d * 0.6), h = round(size * 1.235);
+	if ((self = [super initWithFrame:CGRectMake(0, 0, 3 * d + 2 * gap, h)])) {
+		self.userInteractionEnabled = NO;
+		_group = [CALayer layer];
+		_group.frame = self.bounds;
+		NSMutableArray<CALayer *> *dots = [NSMutableArray array];
+		for (NSInteger i = 0; i < 3; i++) {
+			CALayer *dot = [CALayer layer];
+			dot.frame = CGRectMake(i * (d + gap), (h - d) / 2, d, d);
+			dot.cornerRadius = d / 2;
+			dot.backgroundColor = UIColor.whiteColor.CGColor;
+			[_group addSublayer:dot];
+			[dots addObject:dot];
+		}
+		_dots = dots;
+		[self.layer addSublayer:_group];
+	}
+	return self;
+}
+
+- (void)update:(double)t from:(double)s to:(double)e {
+	double leave = e - kBreakClose - kBreakOut, in = MAX(0, MIN(1, (t - s - kBreakWait) / kBreakIn));
+	double scale = (1 - pow(1 - in, 3)) * (1 + 0.08 * sin((t - s) * M_PI * 2 / 3)), alpha = MIN(1, in * 2);
+	if (t > leave) {
+		double p = (t - leave) / kBreakOut, shrink = RLSmooth((p - 0.35) / 0.65);
+		scale *= p < 0.35 ? 1 + 0.15 * RLSmooth(p / 0.35) : 1.15 * (1 - shrink);
+		alpha *= 1 - shrink;
+	}
+	double third = MAX(0.01, (leave - s) / 3);
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	_group.transform = CATransform3DMakeScale(MAX(scale, 0.001), MAX(scale, 0.001), 1);
+	_group.opacity = alpha;
+	for (NSUInteger i = 0; i < _dots.count; i++) _dots[i].opacity = 0.3 + 0.7 * MAX(0, MIN(1, (t - s - i * third) / third));
+	[CATransaction commit];
+}
+@end
+
 #pragma mark - Settings sheet (long-press the lyrics)
 
 @interface RLSettingsViewController : UIViewController
@@ -445,6 +503,7 @@ static UIViewPropertyAnimator *RLEase(NSTimeInterval d, void (^animations)(void)
 	[self row:RLL(@"Translation Language", @"번역 언어") control:trLang];
 	[self toggle:@"synth" title:RLL(@"AI Word Sync (line-synced songs)", @"AI 단어 싱크 (줄 가사만 있는 곡)") def:NO];
 	[self toggle:@"blurInactive" title:RLL(@"Blur Inactive", @"비활성 줄 흐리게") def:YES];
+	[self toggle:@"dots" title:RLL(@"Dots During Instrumental Breaks", @"간주 중 점 표시") def:YES];
 	[self toggle:@"bounce" title:RLL(@"Staggered Scroll (lines follow one by one)", @"줄이 하나씩 따라오는 스크롤") def:YES];
 	[self toggle:@"replayOnRecord" title:RLL(@"Restart from 0 when screen recording starts", @"화면 녹화 시작하면 처음부터 다시 재생") def:NO];
 	[self toggle:@"shakeOpen" title:RLL(@"Shake to Open Settings", @"흔들어서 설정 열기") def:YES];
@@ -587,7 +646,9 @@ static UIViewPropertyAnimator *RLEase(NSTimeInterval d, void (^animations)(void)
 	NSArray<RLLine *> *_lines;
 	NSMutableArray<RLLineView *> *_lineViews;
 	NSMutableIndexSet *_activeSet;
-	NSInteger _focus;
+	RLDotsView *_dots;
+	NSInteger _focus, _brk;
+	BOOL _brkOpen;
 	CGSize _builtSize;
 	UIEdgeInsets _insets;
 	CGFloat _tidalAlpha, _nativeSize, _nativeMargin, _anchor, _gap;
@@ -666,6 +727,7 @@ static RLLyricsView *gCache;
 		_lineViews = [NSMutableArray array];
 		_activeSet = [NSMutableIndexSet indexSet];
 		_focus = -2;
+		_brk = -1;
 		_scroll = [[UIScrollView alloc] initWithFrame:self.bounds];
 		_scroll.delegate = self;
 		_scroll.showsVerticalScrollIndicator = NO;
@@ -740,6 +802,10 @@ static RLLyricsView *gCache;
 	for (UIView *v in _lineViews) [v removeFromSuperview];
 	[_lineViews removeAllObjects];
 	[_activeSet removeAllIndexes];
+	[_dots removeFromSuperview];
+	_dots = nil;
+	_brk = -1;
+	_brkOpen = NO;
 	_focus = -2;
 	_builtSize = self.bounds.size;
 	if (!_lines.count || _builtSize.width <= 0) { _scroll.contentSize = CGSizeZero; return; }
@@ -752,6 +818,9 @@ static RLLyricsView *gCache;
 		[_scroll addSubview:lv];
 		[_lineViews addObject:lv];
 	}
+	_dots = [[RLDotsView alloc] initWithSize:size];
+	_dots.hidden = YES;
+	[_scroll addSubview:_dots];
 	[self relayout];
 	[self tick];
 }
@@ -764,7 +833,14 @@ static RLLyricsView *gCache;
 
 - (void)relayout {
 	CGFloat y = _anchor;
-	for (RLLineView *lv in _lineViews) {
+	for (NSUInteger i = 0; i < _lineViews.count; i++) {
+		RLLineView *lv = _lineViews[i];
+		if (_brkOpen && (NSInteger)i == _brk) {
+			CGSize s = _dots.bounds.size;
+			CGRect f = { CGPointMake(lv.line.right ? lv.layer.position.x - s.width : lv.layer.position.x, y), s };
+			[UIView performWithoutAnimation:^{ self->_dots.frame = f; }];
+			y += s.height + _gap;
+		}
 		lv.top = y;
 		lv.bounds = CGRectMake(0, 0, lv.bounds.size.width, lv.height);
 		lv.layer.position = CGPointMake(lv.layer.position.x, y + lv.height / 2);
@@ -776,7 +852,7 @@ static RLLyricsView *gCache;
 - (void)scrollToFocus:(BOOL)animated bounce:(BOOL)bounce {
 	CGFloat h = _scroll.bounds.size.height;
 	RLLineView *lv = _focus >= 0 ? _lineViews[_focus] : nil;
-	CGFloat y = lv ? lv.top + lv.height / 2 - h * 0.4 : 0;
+	CGFloat y = _brkOpen && _focus == _brk ? CGRectGetMidY(_dots.frame) - h * 0.4 : lv ? lv.top + lv.height / 2 - h * 0.4 : 0;
 	y = MAX(0, MIN(y, _scroll.contentSize.height - h));
 	if (!animated) { _scroll.contentOffset = CGPointMake(0, y); return; }
 	if (bounce) { [self bounceTo:y]; return; }
@@ -833,13 +909,23 @@ static RLLyricsView *gCache;
 	double t = RLStore.shared.now, now = CACurrentMediaTime();
 
 	NSMutableIndexSet *active = [NSMutableIndexSet indexSet];
-	NSInteger last = -1;
+	NSInteger last = -1, brk = -1;
+	double sungTo = 0, bs = 0, be = 0;
+	BOOL dots = RLBool(@"dots", YES);
 	for (NSUInteger i = 0; i < _lineViews.count; i++) {
 		RLLine *l = _lineViews[i].line;
 		double next = i + 1 < _lineViews.count ? _lineViews[i + 1].line.start : INFINITY;
 		if (t >= l.start && t < MAX(l.end, MIN(l.end + 2.5, next))) [active addIndex:i];
 		if (t >= l.start) last = i;
+		if (dots && brk < 0 && t >= sungTo && t < l.start && l.start - sungTo >= kBreakMin) brk = i, bs = sungTo, be = l.start;
+		sungTo = MAX(sungTo, l.end);
 	}
+	if (brk >= 0) [active removeAllIndexes];
+	BOOL open = brk >= 0 && t < be - kBreakClose, moved = open != _brkOpen || (open && brk != _brk);
+	_brk = brk;
+	_brkOpen = open;
+	_dots.hidden = !open;
+	if (open) [_dots update:t from:bs to:be];
 	__block BOOL grew = NO, shrank = NO;
 	[_activeSet enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
 		if ([active containsIndex:i]) return;
@@ -860,21 +946,22 @@ static RLLyricsView *gCache;
 	_activeSet = active;
 
 	static const CGFloat kBlurEm[] = { 0, 0.035, 0.05, 0.06, 0.07 };
-	BOOL blur = RLBool(@"blurInactive", YES) && !_dragging && _lastUserScroll == 0 && last >= 0;
+	BOOL blur = RLBool(@"blurInactive", YES) && !_dragging && _lastUserScroll == 0 && (last >= 0 || brk >= 0);
 	NSInteger from = active.count ? (NSInteger)active.firstIndex : last;
 	for (NSUInteger i = 0; i < _lineViews.count; i++) {
-		NSInteger d = [active containsIndex:i] || (NSInteger)i == from ? 0 : active.count ? MIN(4, labs((NSInteger)i - from)) : 4;
+		NSInteger d = brk >= 0 ? MIN(4, (NSInteger)i >= brk ? (NSInteger)i - brk + open : brk - (NSInteger)i)
+		            : [active containsIndex:i] || (NSInteger)i == from ? 0 : active.count ? MIN(4, labs((NSInteger)i - from)) : 4;
 		[_lineViews[i] setBlurEm:blur ? kBlurEm[d] : 0];
 	}
-	if (grew || shrank) {
-		RLEase(grew ? 0.5 : 0.3, ^{ [self relayout]; });
+	if (grew || shrank || moved) {
+		RLEase(grew || open ? 0.5 : 0.3, ^{ [self relayout]; });
 		if (_focus >= 0 && !_dragging && _lastUserScroll == 0) [self scrollToFocus:YES bounce:NO];
 	}
 
 	CGFloat y = _scroll.contentOffset.y, h = _scroll.bounds.size.height;
 	for (RLLineView *lv in _lineViews) [lv setDrawn:lv.top + lv.height >= y - h && lv.top <= y + 2 * h];
 
-	NSInteger focus = active.count ? (NSInteger)active.firstIndex : last;
+	NSInteger focus = brk >= 0 ? brk : active.count ? (NSInteger)active.firstIndex : last;
 	if (_lastUserScroll > 0 && !_dragging && now - _lastUserScroll > 3) { _lastUserScroll = 0; _focus = -3; }
 	if (focus != _focus && !_dragging && _lastUserScroll == 0) {
 		BOOL animated = _focus != -2;
