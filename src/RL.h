@@ -72,6 +72,7 @@ void RLFetch(NSString *title, NSString *artist, NSString *isrc, BOOL flush, void
 @property (nonatomic, weak) UIView *follow;
 @property (nonatomic, readonly) BOOL ready;
 @property (nonatomic, readonly) BOOL hasFrame;
+@property (nonatomic, readonly) UIColor *avgColor;
 - (void)setCover:(UIImage *)cover;
 - (void)tick;
 - (void)restart;

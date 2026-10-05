@@ -206,9 +206,15 @@ static float RLDarkenFor(float luminance) {
 			for (int ch = 0; ch < 3; ch++) px[i * 4 + ch] = (uint8_t)lroundf(MIN(MAX(a[i * 3 + ch], 0), 1) * 255);
 			px[i * 4 + 3] = 255;
 		}
+		float darken = RLDarkenFor(lum / (kN * kN)), c[3] = { 0 };
+		int n = kN * kN / 3;
+		for (int i = kN * kN - n; i < kN * kN; i++)
+			for (int ch = 0; ch < 3; ch++) c[ch] += a[i * 3 + ch] * 0.94f / n;
+		float gray = 0.299f * c[0] + 0.587f * c[1] + 0.114f * c[2];
+		for (int ch = 0; ch < 3; ch++) c[ch] = MIN(MAX(((gray + (c[ch] - gray) * 1.25f - 0.5f) * 1.25f + 0.5f) * 0.75f * darken, 0), 1);
+		UIColor *avg = [UIColor colorWithRed:c[0] green:c[1] blue:c[2] alpha:1];
 		free(a);
 		free(b);
-		float darken = RLDarkenFor(lum / (kN * kN));
 		dispatch_async(dispatch_get_main_queue(), ^{
 			if (token == self->_coverToken) {
 				MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:kN height:kN mipmapped:NO];
@@ -218,6 +224,7 @@ static float RLDarkenFor(float luminance) {
 				self->_texB = tex;
 				self->_prevDarken = self->_nextDarken;
 				self->_nextDarken = darken;
+				self->_avgColor = avg;
 				self->_transitionStart = CACurrentMediaTime();
 			}
 			free(px);

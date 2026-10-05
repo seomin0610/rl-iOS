@@ -425,6 +425,7 @@ static UIViewPropertyAnimator *RLEase(NSTimeInterval d, void (^animations)(void)
 	[self toggle:@"enabled" title:RLL(@"Use Radiant Lyrics", @"Radiant 가사 사용") def:YES];
 	[self toggle:@"backdrop" title:RLL(@"Custom Backdrop (Kawarp)", @"배경 효과 (Kawarp)") def:YES];
 	[self toggle:@"motion" title:RLL(@"Animate Backdrop", @"배경 움직임") def:YES];
+	[self toggle:@"fadeTint" title:RLL(@"Auto Bottom Fade Color", @"하단 그라데이션 색 자동 선택") def:YES];
 	[self toggle:@"romanize" title:RLL(@"Romanize Lyrics", @"로마자 표기") def:NO];
 	[self toggle:@"tr" title:RLL(@"Show Translation", @"번역 표시") def:NO];
 	NSLocale *names = [NSLocale localeWithLocaleIdentifier:RLL(@"en", @"ko")];

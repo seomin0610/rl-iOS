@@ -95,6 +95,7 @@ static void RLSync(void);
 static void RLSyncBackdrop(void);
 static void RLDumpPlayer(UIView *hv);
 static void RLCheckGradient(CAGradientLayer *g);
+static void RLUntint(void);
 
 @interface RLStore ()
 @property (nonatomic, copy) NSString *title, *artist;
@@ -301,6 +302,7 @@ void RLSettingsChanged(NSString *key) {
 	else if ([key isEqualToString:@"tr"] || [key isEqualToString:@"trLang"]) { [gLyricsView rebuild]; [RLStore.shared translate]; }
 	else if ([key isEqualToString:@"enabled"]) RLSync();
 	else if ([key isEqualToString:@"backdrop"]) RLSyncBackdrop();
+	else if ([key isEqualToString:@"fadeTint"]) { RLUntint(); RLSyncBackdrop(); }
 	else if ([key isEqualToString:@"lang"]) {
 		UIButtonConfiguration *c = gSettingsButton.configuration;
 		c.title = RLL(@"Radiant Lyrics Settings", @"Radiant 가사 설정");
@@ -448,6 +450,39 @@ static void RLHideNow(CALayer *l, NSString *what) {
 	RLLog(@"backdrop: hid TIDAL %@ %@", what, NSStringFromCGRect(l.frame));
 }
 
+static void (*orig_setColors)(CAGradientLayer *, SEL, NSArray *);
+static NSMapTable<CAGradientLayer *, NSArray *> *gTinted;
+
+static CGFloat RLHueGap(CGColorRef a, UIColor *b) {
+	CGFloat h1, s1, h2, s2, x;
+	if (![[UIColor colorWithCGColor:a] getHue:&h1 saturation:&s1 brightness:&x alpha:&x] || ![b getHue:&h2 saturation:&s2 brightness:&x alpha:&x]) return 180;
+	if (s1 < 0.15 || s2 < 0.15) return s1 < 0.15 && s2 < 0.15 ? 0 : 180;
+	CGFloat d = fabs(h1 - h2);
+	return MIN(d, 1 - d) * 360;
+}
+
+static void RLTint(CAGradientLayer *g, NSArray *colors) {
+	UIColor *avg = gBackdrop.avgColor;
+	if (!avg || !colors.count || !RLBool(@"fadeTint", YES)) return;
+	if (!gTinted) gTinted = [NSMapTable weakToStrongObjectsMapTable];
+	[gTinted setObject:colors forKey:g];
+	CGColorRef tidal = NULL;
+	for (id c in colors)
+		if (!tidal || CGColorGetAlpha((__bridge CGColorRef)c) > CGColorGetAlpha(tidal)) tidal = (__bridge CGColorRef)c;
+	CGFloat gap = RLHueGap(tidal, avg);
+	NSMutableArray *out = [NSMutableArray array];
+	for (id c in colors) [out addObject:(id)[avg colorWithAlphaComponent:CGColorGetAlpha((__bridge CGColorRef)c)].CGColor];
+	NSArray *want = gap < 30 ? colors : out;
+	if ([g.colors isEqualToArray:want]) return;
+	orig_setColors(g, @selector(setColors:), want);
+	RLLog(@"bottom fade: %@ (hue gap %.0f)", want == colors ? @"TIDAL color" : @"backdrop color", gap);
+}
+
+static void RLUntint(void) {
+	for (CAGradientLayer *g in gTinted.keyEnumerator.allObjects) orig_setColors(g, @selector(setColors:), [gTinted objectForKey:g]);
+	[gTinted removeAllObjects];
+}
+
 static void RLCheckGradient(CAGradientLayer *g) {
 	if (!pthread_main_np() || !gClearedView || !gBgColor || [gHiddenBg containsObject:g]) return;
 	if (fabs(g.startPoint.x - g.endPoint.x) > 0.01 || g.startPoint.y == g.endPoint.y) return;
@@ -456,6 +491,7 @@ static void RLCheckGradient(CAGradientLayer *g) {
 	BOOL down = g.startPoint.y <= g.endPoint.y;
 	CGColorRef top = (__bridge CGColorRef)(down ? cs.firstObject : cs.lastObject), bottom = (__bridge CGColorRef)(down ? cs.lastObject : cs.firstObject);
 	if (CGColorGetAlpha(top) > 0.5 && CGColorGetAlpha(bottom) < 0.1 && RLSameRGB(top, gBgColor)) RLHideNow(g, @"top fade");
+	else if (CGColorGetAlpha(top) < 0.1 && CGColorGetAlpha(bottom) > 0.5 && RLSameRGB(bottom, gBgColor)) RLTint(g, cs);
 }
 
 // The fade checks compare against gBgColor, so whenever it changes rescan: a gradient checked
@@ -477,8 +513,11 @@ static void hook_setBG(CALayer *self, SEL _cmd, CGColorRef c) {
 	if (gBgColor && !self.contents && !self.sublayers.count && CGColorGetAlpha(c) > 0.9 && RLSameColor(c, gBgColor) && ![gHiddenBg containsObject:self]) RLHideNow(self, @"patch");
 }
 
-static void (*orig_setColors)(CAGradientLayer *, SEL, NSArray *);
-static void hook_setColors(CAGradientLayer *self, SEL _cmd, NSArray *colors) { orig_setColors(self, _cmd, colors); RLCheckGradient(self); }
+static void hook_setColors(CAGradientLayer *self, SEL _cmd, NSArray *colors) {
+	orig_setColors(self, _cmd, colors);
+	if (pthread_main_np() && [gTinted objectForKey:self]) RLTint(self, colors);
+	else RLCheckGradient(self);
+}
 static void (*orig_setStart)(CAGradientLayer *, SEL, CGPoint);
 static void hook_setStart(CAGradientLayer *self, SEL _cmd, CGPoint p) { orig_setStart(self, _cmd, p); RLCheckGradient(self); }
 static void (*orig_setEnd)(CAGradientLayer *, SEL, CGPoint);
@@ -499,6 +538,7 @@ static void RLRestoreBackground(void) {
 	[gHiddenBg removeAllObjects];
 	[gHiddenFull removeAllObjects];
 	for (CALayer *l in hidden) l.hidden = NO;
+	RLUntint();
 	gClearedView.backgroundColor = gClearedColor;
 	gClearedView = nil;
 	gClearedColor = nil;
@@ -565,6 +605,7 @@ static void RLSyncBackdrop(void) {
 	RLUnhideContainers();
 	RLHideBackground(hv.layer, hv.layer, hv.bounds, 0);
 	RLSetBgColor(gHiddenFull.anyObject.backgroundColor);
+	for (CAGradientLayer *g in gTinted.keyEnumerator.allObjects) RLTint(g, [gTinted objectForKey:g]);
 
 	id vm = RLViewModel(gHost);
 	bool *showing = RLIvar(vm, "_isShowingLyrics"), *full = RLIvar(vm, "_isFullLyrics");
