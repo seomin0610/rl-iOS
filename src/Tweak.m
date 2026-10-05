@@ -643,9 +643,13 @@ static void hook_grAddTarget(UIGestureRecognizer *self, SEL _cmd, id target, SEL
 static CGPoint gTouchAt;
 static double gTouchTime;
 
+static BOOL RLInHeader(CGPoint p, UIView *hv) {
+	return p.y <= hv.safeAreaInsets.top + 70;
+}
+
 static void RLLearnLyricsButton(BOOL wasShowing, double now) {
 	UIView *hv = gHost.viewIfLoaded;
-	if (!hv || now - gTouchTime > 0.6) return;
+	if (!hv || now - gTouchTime > 0.6 || !RLInHeader(gTouchAt, hv)) return;
 	RLSet(wasShowing ? @"lyricsBtnOn" : @"lyricsBtnOff", NSStringFromCGPoint(gTouchAt));
 	RLLog(@"lyrics button at %@", NSStringFromCGPoint(gTouchAt));
 }
@@ -674,11 +678,13 @@ static void RLObserve(CFRunLoopObserverRef o, CFRunLoopActivity a, void *info) {
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
 	gTouchAt = [t locationInView:g.view];
 	gTouchTime = CACurrentMediaTime();
-	bool *on = RLIvar(RLViewModel(gHost), "_isShowingLyrics");
-	NSString *a = on && *on ? @"rl.lyricsBtnOn" : @"rl.lyricsBtnOff", *b = on && *on ? @"rl.lyricsBtnOff" : @"rl.lyricsBtnOn";
-	NSString *p = [RLDefaults stringForKey:a] ?: [RLDefaults stringForKey:b];
-	CGPoint btn = CGPointFromString(p);
-	if (!RLBool(@"holdOpen", YES) || !p || hypot(btn.x - gTouchAt.x, btn.y - gTouchAt.y) > 30) return NO;
+	BOOL near = NO;
+	for (NSString *k in @[ @"rl.lyricsBtnOn", @"rl.lyricsBtnOff" ]) {
+		NSString *p = [RLDefaults stringForKey:k];
+		CGPoint btn = CGPointFromString(p);
+		near |= p && RLInHeader(btn, g.view) && hypot(btn.x - gTouchAt.x, btn.y - gTouchAt.y) <= 36;
+	}
+	if (!RLBool(@"holdOpen", YES) || !near) return NO;
 	_touch = t;
 	return YES;
 }
