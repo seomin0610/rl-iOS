@@ -95,6 +95,7 @@ static void RLSync(void);
 static void RLSyncBackdrop(void);
 static void RLDumpPlayer(UIView *hv);
 static void RLCheckGradient(CAGradientLayer *g);
+static BOOL RLSameRGB(CGColorRef a, CGColorRef b);
 static void RLUntint(void);
 
 @interface RLStore ()
@@ -397,7 +398,7 @@ static void RLHideBackground(CALayer *layer, CALayer *root, CGRect bounds, int d
 		BOOL full = (fill || image) && r.size.width * r.size.height >= bounds.size.width * bounds.size.height * 0.9;
 		BOOL patch = NO;
 		for (CALayer *bg in gHiddenFull)
-			if (fill) patch |= RLSameColor(bg.backgroundColor, l.backgroundColor);
+			if (!l.contents && l.backgroundColor && CGColorGetAlpha(l.backgroundColor) > 0.01) patch |= RLSameRGB(bg.backgroundColor, l.backgroundColor);
 		if (!full && !patch) continue;
 		l.hidden = YES;
 		[gHiddenBg addObject:l];
@@ -473,6 +474,7 @@ static void RLTint(CAGradientLayer *g, NSArray *colors) {
 	NSMutableArray *out = [NSMutableArray array];
 	for (id c in colors) [out addObject:(id)[avg colorWithAlphaComponent:CGColorGetAlpha((__bridge CGColorRef)c)].CGColor];
 	NSArray *want = gap < 30 ? colors : out;
+	objc_setAssociatedObject(g, &gTinted, want, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 	if ([g.colors isEqualToArray:want]) return;
 	orig_setColors(g, @selector(setColors:), want);
 	RLLog(@"bottom fade: %@ (hue gap %.0f)", want == colors ? @"TIDAL color" : @"backdrop color", gap);
@@ -510,7 +512,7 @@ static void hook_setBG(CALayer *self, SEL _cmd, CGColorRef c) {
 	orig_setBG(self, _cmd, c);
 	if (!gClearedView || !c || !pthread_main_np()) return;
 	if ([gHiddenFull containsObject:self]) { RLSetBgColor(c); return; }
-	if (gBgColor && !self.contents && !self.sublayers.count && CGColorGetAlpha(c) > 0.9 && RLSameColor(c, gBgColor) && ![gHiddenBg containsObject:self]) RLHideNow(self, @"patch");
+	if (gBgColor && !self.contents && !self.sublayers.count && CGColorGetAlpha(c) > 0.01 && RLSameRGB(c, gBgColor) && ![gHiddenBg containsObject:self]) RLHideNow(self, @"patch");
 }
 
 static void hook_setColors(CAGradientLayer *self, SEL _cmd, NSArray *colors) {
@@ -605,7 +607,11 @@ static void RLSyncBackdrop(void) {
 	RLUnhideContainers();
 	RLHideBackground(hv.layer, hv.layer, hv.bounds, 0);
 	RLSetBgColor(gHiddenFull.anyObject.backgroundColor);
-	for (CAGradientLayer *g in gTinted.keyEnumerator.allObjects) RLTint(g, [gTinted objectForKey:g]);
+	for (CAGradientLayer *g in gTinted.keyEnumerator.allObjects) {
+		NSArray *orig = [gTinted objectForKey:g], *cur = g.colors;
+		if (cur.count && ![cur isEqualToArray:orig] && ![cur isEqualToArray:objc_getAssociatedObject(g, &gTinted)]) orig = cur;
+		RLTint(g, orig);
+	}
 
 	id vm = RLViewModel(gHost);
 	bool *showing = RLIvar(vm, "_isShowingLyrics"), *full = RLIvar(vm, "_isFullLyrics");
@@ -634,6 +640,68 @@ static void hook_grAddTarget(UIGestureRecognizer *self, SEL _cmd, id target, SEL
 	orig_grAddTarget(self, _cmd, target, action);
 }
 
+static CGPoint gTouchAt;
+static double gTouchTime;
+
+static void RLLearnLyricsButton(BOOL wasShowing, double now) {
+	UIView *hv = gHost.viewIfLoaded;
+	if (!hv || now - gTouchTime > 0.6) return;
+	RLSet(wasShowing ? @"lyricsBtnOn" : @"lyricsBtnOff", NSStringFromCGPoint(gTouchAt));
+	RLLog(@"lyrics button at %@", NSStringFromCGPoint(gTouchAt));
+}
+
+static void RLObserve(CFRunLoopObserverRef o, CFRunLoopActivity a, void *info) {
+	id vm = gHost ? RLViewModel(gHost) : nil;
+	bool *on = RLIvar(vm, "_isShowingLyrics"), *full = RLIvar(vm, "_isFullLyrics");
+	if (!on) return;
+	static int last = -1;
+	static double burst;
+	int state = *on | (full && *full) << 1;
+	double now = CACurrentMediaTime();
+	if (state != last) {
+		if (last >= 0 && ((last ^ state) & 1)) RLLearnLyricsButton(last & 1, now);
+		last = state;
+		burst = now + 0.8;
+	}
+	if (now < burst) RLSyncBackdrop();
+}
+
+@interface RLLyricsPress : NSObject <UIGestureRecognizerDelegate>
+@end
+@implementation RLLyricsPress {
+	__weak UITouch *_touch;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
+	gTouchAt = [t locationInView:g.view];
+	gTouchTime = CACurrentMediaTime();
+	bool *on = RLIvar(RLViewModel(gHost), "_isShowingLyrics");
+	NSString *a = on && *on ? @"rl.lyricsBtnOn" : @"rl.lyricsBtnOff", *b = on && *on ? @"rl.lyricsBtnOff" : @"rl.lyricsBtnOn";
+	NSString *p = [RLDefaults stringForKey:a] ?: [RLDefaults stringForKey:b];
+	CGPoint btn = CGPointFromString(p);
+	if (!RLBool(@"holdOpen", YES) || !p || hypot(btn.x - gTouchAt.x, btn.y - gTouchAt.y) > 30) return NO;
+	_touch = t;
+	return YES;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other { return YES; }
+- (void)pressed:(UILongPressGestureRecognizer *)g {
+	if (g.state != UIGestureRecognizerStateBegan) return;
+	for (UIGestureRecognizer *o in _touch.gestureRecognizers)
+		if (o != g && o.enabled) { o.enabled = NO; o.enabled = YES; }
+	[[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+	RLOpenSettings(gHost);
+}
+@end
+
+static void RLAttachLyricsPress(UIView *hv) {
+	static RLLyricsPress *press;
+	if (!hv || objc_getAssociatedObject(hv, &gTouchAt)) return;
+	if (!press) press = [RLLyricsPress new];
+	UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc] initWithTarget:press action:@selector(pressed:)];
+	g.delegate = press;
+	[hv addGestureRecognizer:g];
+	objc_setAssociatedObject(hv, &gTouchAt, g, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void RLPollUpdate(void) {
 	BOOL want = gHost || gLegacy;
 	if (want && !gPoll) gPoll = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { RLSync(); RLSyncBackdrop(); }];
@@ -656,6 +724,7 @@ static void hook_viewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) 
 	orig_viewDidAppear(self, _cmd, animated);
 	const char *name = class_getName(object_getClass(self));
 	if (strstr(name, "NowPlayingHostingController")) {
+		RLAttachLyricsPress(self.view);
 		gHost = self;
 		id vm = RLViewModel(self);
 		RLLog(@"player shown, viewModel %@, _isShowingLyrics %s", vm ? @"found" : @"MISSING", RLIvar(vm, "_isShowingLyrics") ? "found" : "MISSING");
@@ -680,7 +749,7 @@ static void hook_viewDidDisappear(UIViewController *self, SEL _cmd, BOOL animate
 static void RLShake(void) {
 	static double last;
 	double now = CACurrentMediaTime();
-	if (now - last < 1.5) return;
+	if (!RLBool(@"shakeOpen", YES) || now - last < 1.5) return;
 	last = now;
 	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes)
 		if ([scene isKindOfClass:UIWindowScene.class])
@@ -716,6 +785,7 @@ __attribute__((constructor)) static void RLInit(void) {
 	RLHook(CAGradientLayer.class, @selector(setEndPoint:), (IMP)hook_setEnd, (IMP *)&orig_setEnd);
 	RLHook(CAGradientLayer.class, @selector(setBounds:), (IMP)hook_gSetBounds, (IMP *)&orig_gSetBounds);
 	RLHook(CAGradientLayer.class, @selector(setFrame:), (IMP)hook_gSetFrame, (IMP *)&orig_gSetFrame);
+	CFRunLoopAddObserver(CFRunLoopGetMain(), CFRunLoopObserverCreate(NULL, kCFRunLoopBeforeWaiting, true, 1999000, RLObserve, NULL), kCFRunLoopCommonModes);
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ RLMakeBackdrop(); });
 	RLLog(@"loaded");
 }

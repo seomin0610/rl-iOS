@@ -447,6 +447,8 @@ static UIViewPropertyAnimator *RLEase(NSTimeInterval d, void (^animations)(void)
 	[self toggle:@"blurInactive" title:RLL(@"Blur Inactive", @"비활성 줄 흐리게") def:YES];
 	[self toggle:@"bounce" title:RLL(@"Staggered Scroll (lines follow one by one)", @"줄이 하나씩 따라오는 스크롤") def:YES];
 	[self toggle:@"replayOnRecord" title:RLL(@"Restart from 0 when screen recording starts", @"화면 녹화 시작하면 처음부터 다시 재생") def:NO];
+	[self toggle:@"shakeOpen" title:RLL(@"Shake to Open Settings", @"흔들어서 설정 열기") def:YES];
+	[self toggle:@"holdOpen" title:RLL(@"Long Press Lyrics Button to Open Settings", @"가사 버튼 꾹 눌러서 설정 열기") def:YES];
 	UISegmentedControl *style = [[UISegmentedControl alloc] initWithItems:@[ RLL(@"Line", @"줄"), RLL(@"Word", @"단어"), RLL(@"Syllable", @"음절") ]];
 	style.selectedSegmentIndex = (NSInteger)RLNum(@"style", 2);
 	[style addAction:[UIAction actionWithHandler:^(UIAction *a) { RLSet(@"style", @(((UISegmentedControl *)a.sender).selectedSegmentIndex)); }] forControlEvents:UIControlEventValueChanged];

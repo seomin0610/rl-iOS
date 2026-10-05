@@ -1,4 +1,5 @@
 #import "RL.h"
+#import <os/log.h>
 
 @implementation RLSyl
 @end
@@ -10,7 +11,7 @@ static id RLAs(id v, Class c) { return [v isKindOfClass:c] ? v : nil; }
 static NSMutableArray<NSString *> *gLog;
 
 void RLLogLine(NSString *line) {
-	NSLog(@"[RadiantTidal] %@", line);
+	os_log(OS_LOG_DEFAULT, "[RadiantTidal] %{public}@", line);
 	static NSDateFormatter *f;
 	static dispatch_once_t once;
 	dispatch_once(&once, ^{
